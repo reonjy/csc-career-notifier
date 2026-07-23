@@ -1,5 +1,5 @@
 # CSC Career Portal → Telegram
-# Scrapes with Selenium (Chrome) every hour and notifies on NEW jobs.
+# Scrapes with Selenium (Chrome) on a schedule and notifies on NEW jobs.
 #
 # Secrets (Settings → Secrets → Actions):
 #   TELEGRAM_BOT_TOKEN  (required)
@@ -8,12 +8,14 @@
 #   CSC_POSITION (default: administrative)
 #   CSC_REGION   (default: Region VII)
 #   CSC_SEARCH   (default: Cebu)
-#   SEND_ON_FIRST_RUN / RESEND_ALL — prefer workflow_dispatch inputs below
+#
+# Note: cron is UTC. Free GitHub schedules can lag. Use "Run workflow" for an immediate poll.
 
 name: CSC Career Telegram Notify
 
 on:
   schedule:
+    # Every hour at :00 UTC (may lag on free tier)
     - cron: "0 * * * *"
   workflow_dispatch:
     inputs:
@@ -36,7 +38,7 @@ on:
 
 permissions:
   contents: read
-  actions: read
+  actions: write
 
 jobs:
   notify:
@@ -50,6 +52,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
 
       - name: Install Chrome
         uses: browser-actions/setup-chrome@v1
@@ -60,11 +63,12 @@ jobs:
           pip install -r requirements.txt
           google-chrome --version || chromium --version || true
 
+      # Same fix as OnlineJobs: restore + separate save so seen IDs always persist
       - name: Restore seen-job state
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: state
-          key: csc-seen-${{ github.run_id }}
+          key: csc-seen-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             csc-seen-
 
@@ -78,7 +82,6 @@ jobs:
           CSC_AGENCY: ${{ secrets.CSC_AGENCY }}
           HEADLESS: "true"
           STATE_FILE: state/seen_jobs.json
-          # Manual run inputs take priority; else secrets; else false
           RESEND_ALL: ${{ github.event.inputs.resend_all || secrets.RESEND_ALL || 'false' }}
           SEND_ON_FIRST_RUN: ${{ github.event.inputs.send_on_first_run || secrets.SEND_ON_FIRST_RUN || 'false' }}
           MAX_SEND_PER_RUN: "40"
@@ -87,15 +90,21 @@ jobs:
           export CSC_POSITION="${CSC_POSITION:-administrative}"
           export CSC_REGION="${CSC_REGION:-Region VII}"
           export CSC_SEARCH="${CSC_SEARCH:-Cebu}"
+          echo "=== Poll start $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
           echo "Filters: position=$CSC_POSITION region=$CSC_REGION search=$CSC_SEARCH"
           echo "SEND_ON_FIRST_RUN=$SEND_ON_FIRST_RUN RESEND_ALL=$RESEND_ALL"
+          if [ -f state/seen_jobs.json ]; then
+            echo "Seen state size: $(wc -c < state/seen_jobs.json) bytes"
+          else
+            echo "No seen state yet"
+          fi
           ls -la state || true
           python notify.py --once
+          echo "=== Poll end $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
 
-      - name: Keep state cache warm
+      - name: Save seen-job state
         if: always()
-        run: |
-          mkdir -p state
-          test -f state/seen_jobs.json || echo '{"seen_ids":[]}' > state/seen_jobs.json
-          ls -la state
-          wc -c state/seen_jobs.json || true
+        uses: actions/cache/save@v4
+        with:
+          path: state
+          key: csc-seen-${{ github.run_id }}-${{ github.run_attempt }}
