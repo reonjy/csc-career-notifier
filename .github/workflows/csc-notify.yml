@@ -1,44 +1,25 @@
 # CSC Career Portal → Telegram
-# Scrapes with Selenium (Chrome) on a schedule and notifies on NEW jobs.
+# Scrapes with Selenium (Chrome) and notifies on NEW jobs.
 #
-# Secrets (Settings → Secrets → Actions):
-#   TELEGRAM_BOT_TOKEN  (required)
-#   TELEGRAM_CHAT_ID    (required)
-# Optional:
-#   CSC_POSITION (default: administrative)
-#   CSC_REGION   (default: Region VII)
-#   CSC_SEARCH   (default: Cebu)
+# Secrets:
+#   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID (required)
+#   CSC_POSITION / CSC_REGION / CSC_SEARCH (optional)
+#   RESEND_ALL / SEND_ON_FIRST_RUN (optional secrets; default false)
 #
-# IMPORTANT: GitHub schedule is best-effort (can delay or skip free-tier crons).
-# Cron is offset from :00 to reduce drops during peak load.
-# CSC uses Selenium (~5–15 min/run) so we poll every 30 minutes (not 15).
-# Use "Run workflow" anytime for an immediate poll.
-# State is saved to branch "state" (durable) + Actions cache (fast restore).
+# External cron (recommended): see EXTERNAL_CRON.md
+#   POST body: {"ref":"main"}
+# CSC Selenium runs are slow (~5–15 min) → poll every 30 minutes, not 15.
 
 name: CSC Career Telegram Notify
 
 on:
   schedule:
-    # Every 30 minutes, offset from the hour (UTC)
+    # Weak backup only (GitHub free-tier often skips)
     - cron: "12,42 * * * *"
+  # No inputs — keeps external cron body minimal: {"ref":"main"}
   workflow_dispatch:
-    inputs:
-      resend_all:
-        description: "Send ALL current matches this run (ignore seen list)"
-        required: false
-        default: "false"
-        type: choice
-        options:
-          - "false"
-          - "true"
-      send_on_first_run:
-        description: "If seen list is empty, send current matches instead of only seeding"
-        required: false
-        default: "false"
-        type: choice
-        options:
-          - "false"
-          - "true"
+  repository_dispatch:
+    types: [poll]
 
 permissions:
   contents: write
@@ -110,8 +91,8 @@ jobs:
           CSC_AGENCY: ${{ secrets.CSC_AGENCY }}
           HEADLESS: "true"
           STATE_FILE: state/seen_jobs.json
-          RESEND_ALL: ${{ github.event.inputs.resend_all || secrets.RESEND_ALL || 'false' }}
-          SEND_ON_FIRST_RUN: ${{ github.event.inputs.send_on_first_run || secrets.SEND_ON_FIRST_RUN || 'false' }}
+          RESEND_ALL: ${{ secrets.RESEND_ALL || 'false' }}
+          SEND_ON_FIRST_RUN: ${{ secrets.SEND_ON_FIRST_RUN || 'false' }}
           MAX_SEND_PER_RUN: "40"
         run: |
           mkdir -p state
@@ -120,6 +101,9 @@ jobs:
           export CSC_SEARCH="${CSC_SEARCH:-Cebu}"
           echo "=== Poll start $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
           echo "Event: ${{ github.event_name }}"
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            echo "Dispatch type: ${{ github.event.action }}"
+          fi
           echo "Filters: position=$CSC_POSITION region=$CSC_REGION search=$CSC_SEARCH"
           echo "SEND_ON_FIRST_RUN=$SEND_ON_FIRST_RUN RESEND_ALL=$RESEND_ALL"
           if [ -f state/seen_jobs.json ]; then
