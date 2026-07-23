@@ -74,13 +74,13 @@ def load_settings() -> dict:
             str(getattr(config, "NOTIFY_POLL_INTERVAL_MINUTES", 60)),
         )
     )
-    send_first = (_env("SEND_ON_FIRST_RUN", "false") or "false").lower() in (
-        "1",
-        "true",
-        "yes",
-        "y",
-    )
-    headless = (_env("HEADLESS", "true") or "true").lower() in ("1", "true", "yes", "y")
+    def _truthy(name: str, default: str = "false") -> bool:
+        return (_env(name, default) or default).lower() in ("1", "true", "yes", "y")
+
+    send_first = _truthy("SEND_ON_FIRST_RUN", "false")
+    # Force-send every current match (ignores seen state for this run)
+    resend_all = _truthy("RESEND_ALL", "false")
+    headless = _truthy("HEADLESS", "true")
 
     state = _env("STATE_FILE")
     if state:
@@ -103,6 +103,7 @@ def load_settings() -> dict:
         },
         "poll_interval_minutes": interval,
         "send_on_first_run": send_first,
+        "resend_all": resend_all,
         "headless": headless,
         "state_file": state_path,
     }
@@ -217,20 +218,33 @@ def test_telegram(token: str, chat_id: str) -> None:
 def run_once(settings: dict, seen: set[str]) -> set[str]:
     filters = settings["filters"]
     state_path = Path(settings["state_file"])
+    resend_all = bool(settings.get("resend_all"))
+    send_on_first = bool(settings.get("send_on_first_run"))
 
     print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Polling CSC Career…")
     print(
         f"  Filters: position={filters['position']!r} "
         f"region={filters['region']!r} search={filters['search']!r}"
     )
+    print(
+        f"  Options: send_on_first_run={send_on_first} resend_all={resend_all} "
+        f"already_seen={len(seen)}"
+    )
 
     jobs = run_scrape(filters, headless=settings["headless"])
     print(f"  Found {len(jobs)} active job(s) matching filters")
 
+    if not jobs:
+        print(
+            "  No jobs matched filters — nothing to send. "
+            "Check CSC_POSITION / CSC_REGION / CSC_SEARCH."
+        )
+        save_seen(state_path, seen)
+        return seen
+
     for j in jobs:
         j["_id"] = job_id(j)
 
-    new_jobs = [j for j in jobs if j["_id"] not in seen]
     # Prefer newest posting dates first when notifying
     def _post_key(j):
         from scrape import _parse_date
@@ -238,31 +252,52 @@ def run_once(settings: dict, seen: set[str]) -> set[str]:
         d = _parse_date(j.get("posting_date", "") or "")
         return d or datetime.min.date()
 
-    new_jobs = sorted(new_jobs, key=_post_key, reverse=True)
+    # What to send this run
+    if resend_all:
+        # Ignore seen cache for this run (user requested a full dump)
+        to_send = sorted(jobs, key=_post_key, reverse=True)
+        print(f"  RESEND_ALL: will send all {len(to_send)} current match(es)")
+    else:
+        to_send = [j for j in jobs if j["_id"] not in seen]
+        to_send = sorted(to_send, key=_post_key, reverse=True)
 
     first_run = len(seen) == 0
-    if first_run and not settings["send_on_first_run"]:
+    if first_run and not send_on_first and not resend_all:
         print(
             f"  First run: seeding {len(jobs)} job IDs (no Telegram spam). "
-            "New posts from the next poll will be sent."
+            "Set SEND_ON_FIRST_RUN=true or RESEND_ALL=true to send listings, "
+            "or wait for new posts on later runs."
         )
         for j in jobs:
             seen.add(j["_id"])
         save_seen(state_path, seen)
         return seen
 
-    if not new_jobs:
-        print("  No new jobs.")
+    if not to_send:
+        print(
+            f"  No new jobs to send ({len(jobs)} match filter, "
+            f"all already in seen list). "
+            "Use RESEND_ALL=true once to re-send current matches."
+        )
         for j in jobs:
             seen.add(j["_id"])
         save_seen(state_path, seen)
         return seen
 
-    print(f"  New jobs: {len(new_jobs)} — sending to Telegram…")
+    # Safety cap so we don't spam hundreds of messages by accident
+    max_send = int(_env("MAX_SEND_PER_RUN", "40") or "40")
+    if len(to_send) > max_send:
+        print(
+            f"  Capping send list from {len(to_send)} to {max_send} "
+            f"(set MAX_SEND_PER_RUN to raise)"
+        )
+        to_send = to_send[:max_send]
+
+    print(f"  Sending {len(to_send)} job(s) to Telegram…")
     token = settings["telegram_bot_token"]
     chat_id = settings["telegram_chat_id"]
     sent = 0
-    for job in new_jobs:
+    for job in to_send:
         try:
             send_telegram_message(token, chat_id, format_job_message(job, filters))
             sent += 1
@@ -288,6 +323,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="On first run, send current matches instead of only seeding",
     )
     p.add_argument(
+        "--resend-all",
+        action="store_true",
+        help="Send all current matches this run (ignore seen cache)",
+    )
+    p.add_argument(
         "--interval",
         type=float,
         default=None,
@@ -301,6 +341,8 @@ def main(argv: list[str] | None = None) -> int:
     settings = load_settings()
     if args.send_existing:
         settings["send_on_first_run"] = True
+    if args.resend_all:
+        settings["resend_all"] = True
     if args.interval is not None:
         settings["poll_interval_minutes"] = args.interval
 

@@ -2,20 +2,37 @@
 # Scrapes with Selenium (Chrome) every hour and notifies on NEW jobs.
 #
 # Secrets (Settings → Secrets → Actions):
-#   TELEGRAM_BOT_TOKEN
-#   TELEGRAM_CHAT_ID
-# Optional secrets / vars:
+#   TELEGRAM_BOT_TOKEN  (required)
+#   TELEGRAM_CHAT_ID    (required)
+# Optional:
 #   CSC_POSITION (default: administrative)
 #   CSC_REGION   (default: Region VII)
 #   CSC_SEARCH   (default: Cebu)
+#   SEND_ON_FIRST_RUN / RESEND_ALL — prefer workflow_dispatch inputs below
 
 name: CSC Career Telegram Notify
 
 on:
   schedule:
-    # Every hour (CSC listings change less often than OJ)
     - cron: "0 * * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      resend_all:
+        description: "Send ALL current matches this run (ignore seen list)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      send_on_first_run:
+        description: "If seen list is empty, send current matches instead of only seeding"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 permissions:
   contents: read
@@ -59,17 +76,20 @@ jobs:
           CSC_REGION: ${{ secrets.CSC_REGION }}
           CSC_SEARCH: ${{ secrets.CSC_SEARCH }}
           CSC_AGENCY: ${{ secrets.CSC_AGENCY }}
-          # Defaults applied in shell if secrets empty
           HEADLESS: "true"
-          SEND_ON_FIRST_RUN: "false"
           STATE_FILE: state/seen_jobs.json
+          # Manual run inputs take priority; else secrets; else false
+          RESEND_ALL: ${{ github.event.inputs.resend_all || secrets.RESEND_ALL || 'false' }}
+          SEND_ON_FIRST_RUN: ${{ github.event.inputs.send_on_first_run || secrets.SEND_ON_FIRST_RUN || 'false' }}
+          MAX_SEND_PER_RUN: "40"
         run: |
           mkdir -p state
-          # Apply user defaults when secrets are empty
           export CSC_POSITION="${CSC_POSITION:-administrative}"
           export CSC_REGION="${CSC_REGION:-Region VII}"
           export CSC_SEARCH="${CSC_SEARCH:-Cebu}"
           echo "Filters: position=$CSC_POSITION region=$CSC_REGION search=$CSC_SEARCH"
+          echo "SEND_ON_FIRST_RUN=$SEND_ON_FIRST_RUN RESEND_ALL=$RESEND_ALL"
+          ls -la state || true
           python notify.py --once
 
       - name: Keep state cache warm
@@ -78,3 +98,4 @@ jobs:
           mkdir -p state
           test -f state/seen_jobs.json || echo '{"seen_ids":[]}' > state/seen_jobs.json
           ls -la state
+          wc -c state/seen_jobs.json || true
