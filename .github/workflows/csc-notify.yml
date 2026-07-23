@@ -1,0 +1,80 @@
+# CSC Career Portal → Telegram
+# Scrapes with Selenium (Chrome) every hour and notifies on NEW jobs.
+#
+# Secrets (Settings → Secrets → Actions):
+#   TELEGRAM_BOT_TOKEN
+#   TELEGRAM_CHAT_ID
+# Optional secrets / vars:
+#   CSC_POSITION (default: administrative)
+#   CSC_REGION   (default: Region VII)
+#   CSC_SEARCH   (default: Cebu)
+
+name: CSC Career Telegram Notify
+
+on:
+  schedule:
+    # Every hour (CSC listings change less often than OJ)
+    - cron: "0 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Chrome
+        uses: browser-actions/setup-chrome@v1
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          google-chrome --version || chromium --version || true
+
+      - name: Restore seen-job state
+        uses: actions/cache@v4
+        with:
+          path: state
+          key: csc-seen-${{ github.run_id }}
+          restore-keys: |
+            csc-seen-
+
+      - name: Poll CSC and notify Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          CSC_POSITION: ${{ secrets.CSC_POSITION }}
+          CSC_REGION: ${{ secrets.CSC_REGION }}
+          CSC_SEARCH: ${{ secrets.CSC_SEARCH }}
+          CSC_AGENCY: ${{ secrets.CSC_AGENCY }}
+          # Defaults applied in shell if secrets empty
+          HEADLESS: "true"
+          SEND_ON_FIRST_RUN: "false"
+          STATE_FILE: state/seen_jobs.json
+        run: |
+          mkdir -p state
+          # Apply user defaults when secrets are empty
+          export CSC_POSITION="${CSC_POSITION:-administrative}"
+          export CSC_REGION="${CSC_REGION:-Region VII}"
+          export CSC_SEARCH="${CSC_SEARCH:-Cebu}"
+          echo "Filters: position=$CSC_POSITION region=$CSC_REGION search=$CSC_SEARCH"
+          python notify.py --once
+
+      - name: Keep state cache warm
+        if: always()
+        run: |
+          mkdir -p state
+          test -f state/seen_jobs.json || echo '{"seen_ids":[]}' > state/seen_jobs.json
+          ls -la state
