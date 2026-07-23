@@ -39,16 +39,26 @@ You can reuse the **same Telegram bot** as OnlineJobs.
 
 3. **Actions → CSC Career Telegram Notify → Run workflow**
 
+### Schedule (best-effort)
+
+GitHub free-tier `schedule` is **not** a guaranteed timer — runs can be delayed or skipped.
+This workflow polls about **every 30 minutes** at UTC minutes **:12** and **:42** (offset from the hour
+to reduce drops; Selenium runs are slower than OnlineJobs so 15m would often overlap).
+
+- Check history: https://github.com/reonjy/csc-career-notifier/actions  
+- Use **Run workflow** anytime for an immediate poll  
+- Seen IDs are stored in Actions cache **and** a durable `state` git branch  
+
 ### First run vs later runs
 
 | Situation | What Telegram gets |
 |-----------|--------------------|
-| First run (default) | ✅ connection only — jobs are **seeded**, not sent |
+| First run (default) | Jobs are **seeded**, not sent (no spam). ✅ connection only with `python notify.py --test` |
 | Later runs | Only **new** jobs |
 | Manual run with **resend_all = true** | All current matches (up to 40) |
 
 **Why `SEND_ON_FIRST_RUN=true` as a secret often does nothing after run #1:**  
-the first successful run already saved every job into the Actions **cache**.  
+the first successful run already saved every job into seen state.  
 `SEND_ON_FIRST_RUN` only applies when the seen list is **empty**.  
 To dump current jobs after that, use **resend_all = true** (see below).
 
@@ -64,4 +74,4 @@ Or set secret `RESEND_ALL=true` once, run, then set it back to `false` / delete 
 
 - Uses Selenium + Chrome (heavier than OnlineJobs scraper).
 - First GitHub run can take several minutes while Chrome/chromedriver set up.
-- Seen job IDs are cached under `state/seen_jobs.json` (GitHub Actions cache).
+- Seen job IDs: `state/seen_jobs.json` (cache + `state` branch on the repo).

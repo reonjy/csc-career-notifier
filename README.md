@@ -51,7 +51,7 @@ python notify.py --test
 python notify.py --once
 ```
 
-GitHub Actions: see [SETUP.md](SETUP.md). Workflow runs hourly and only messages **new** posts.
+GitHub Actions: see [SETUP.md](SETUP.md). Workflow polls about every **30 minutes** (UTC, best-effort) and only messages **new** posts.
 
 ## Usage
 
